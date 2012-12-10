@@ -1,0 +1,5 @@
+name = Faster Register
+description = "Stream lines registration and login to a single email address"
+package = Other
+core = 7.x
+configure = admin/config/people/accounts

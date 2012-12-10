@@ -1,0 +1,175 @@
+<?php
+
+/**
+ * @file
+ * Provides streamlined registration process.
+ */
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * @TODO it would be nice to cleanup the form here a bit so this does not get
+ *       burried at the bottom of the page.
+ */
+function faster_register_form_user_admin_settings_alter(&$form, &$form_state) {
+  $form['faster_register'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Non-authenticated role')
+  );
+
+  // Do not allow users to set the anonymous or authenticated user roles as the
+  // non-authenticated role.
+  $roles = user_roles();
+  unset($roles[DRUPAL_ANONYMOUS_RID]);
+  unset($roles[DRUPAL_AUTHENTICATED_RID]);
+  $roles[0] = t('Disabled');
+
+  $form['faster_register']['faster_register_nonauth'] = array(
+    '#type' => 'select',
+    '#title' => t('Non-authenticated role'),
+    '#options' => $roles,
+    '#default_value' => variable_get('faster_Register_nonauth', 0),
+    '#description' => t('Some description')
+  );
+}
+
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function faster_register_form_user_register_form_alter(&$form, &$form_state, $form_id) {
+  // If the non-authenticated role is not set do not touch the form.
+  if (! variable_get('faster_register_nonauth')) {
+    return;
+  }
+
+  // Hide the name value
+  $form['account']['name']['#type'] = 'value';
+  // Generate a random password as a placeholder for the user name
+  $form['account']['name']['#value'] = user_password();
+  $form['account']['mail']['#title'] = t('Email');
+  $form['account']['mail']['#attributes']['placeholder'] = t('Your email address');
+
+  $form['account']['pass']['#access'] = FALSE;
+  $form['account']['pass']['#required'] = FALSE;
+  $form['account']['pass']['#value'] = user_password();
+
+  // Add this validate handler to the top of the validation chain.
+  array_unshift($form['#validate'], 'faster_register_user_register_validate');
+  // Add the submit handler which will be called after the user creation
+  $form['#submit'][] = 'faster_register_user_register_submit';
+}
+
+
+/**
+ * Validation handler for registration form.
+ *
+ * This function handles a flood event for the register by email. It serves to
+ * reduce the risk of someone trying to identify email addresses that are registered
+ * on the site as well as a very poor approach to stopping spam bots from registering
+ * lots of accounts.
+ *
+ * Check for users that have registered but who are still in a non-authenticated
+ * state. This means that they have not used the registration email they were sent.
+ * If the user still has the non-authenticated role then send them the email again.
+ *
+ * @param type $form
+ * @param type $form_state
+ */
+function faster_register_user_register_validate(&$form, &$form_state) {
+  if (! flood_is_allowed('faster_register', 3)) {
+    form_set_error('mail', t('Sorry, you have made three attempts to register your
+      account. Maybe you\'ve !forgotten?', array(
+        '!forgotten' => l(t('forgotten your password'), 'user/password')
+        )
+      )
+    );
+    return;
+  }
+
+  // Check to see if this user exists but has not submitted their registration
+  // email yet, otherwise let Drupal do its thing
+  if ($account = user_load_by_mail($form_state['values']['mail'])) {
+    if (! empty($account->roles[variable_get('faster_register_nonauth')])) {
+      // Alert them that the should use the link in the email
+      // @TODO text should be configurable
+      drupal_set_message(t('Woops! It looks like you already registered but you
+        did not confirm your registration. We\'re going to send you another
+        registration email and you\'ll be able to use that to register for the
+        site. Give us a moment and check your inbox!'));
+      'register_no_approval_required';
+      // Send the authentication email.
+      _user_mail_notify('register_no_approval_required', $account);
+      // Break the rest of the validation steps and return the user
+      // @TODO this is probably not the best way to do this.
+      drupal_goto('user/register');
+    }
+  }
+
+  // Register a flood event
+  flood_register_event('faster_register');
+}
+
+
+/**
+ * Submit handler for user_register.
+ *
+ * This is called after the user is created and will only be called when the
+ * user_register_form. This is not a great way to approach this but because
+ * user_save() changes the roles submitted with the user we have to catch the
+ * create user and alter the DB tables and then log the user back in.
+ *
+ * @param type $form
+ * @param type $form_state
+ */
+function faster_register_user_register_submit(&$form, &$form_state) {
+  $account = $form['#user'];
+  // Get the non-authenticated role
+  $rid = user_role_load(variable_get('faster_register_nonauth'));
+  // Change the username to relate to the email address
+  $name = faster_register_create_username($account->mail);
+  $edit = array(
+    'roles' => array($rid->rid => $rid->name),
+    'name' => $name,
+  );
+
+  // Save the account data into the global user
+  global $user;
+  $user = user_save($account, $edit);
+
+  // Now we log the user in
+  user_login_finalize();
+
+
+}
+
+
+/**
+ * Creat a unique user name from an email address
+ *
+ * @param string $mail
+ * @return string
+ */
+function faster_register_create_username($email) {
+  // Strip off the domain information
+  $name = preg_replace('/@.*$/', '', $email);
+  // Remove unwanted characters from the name
+  $name = preg_replace('/[^a-zA-Z0-9.-]/', '', $name);
+
+  // Check to see if this name already exists.
+  $count = db_query("SELECT COUNT(uid) FROM {users} WHERE LOWER(name) = LOWER(:name)", array(
+    ':name' => $name))
+    ->fetchField();
+
+  $i = 1;
+  while ($count) {
+    $count = db_query("SELECT COUNT(uid) FROM {users} WHERE LOWER(name) = LOWER(:name)",
+      array(':name' => $name . '_' . $i))
+      ->fetchField();
+    if (! $count) {
+      $name .= '_' . $i;
+    }
+    $i++;
+  }
+  return $name;
+}

@@ -1,0 +1,27 @@
+<?php
+
+/**
+ * @file
+ * Install file
+ */
+
+
+/**
+ * Implements hook_requirements().
+ */
+function faster_register_requirements() {
+  $t = get_t();
+  $requirements = array();
+  if (! variable_get('faster_register_nonauth')) {
+    $requirements['faster_register'] = array(
+      'title' => $t('Faster Registration non-authenticated role'),
+      'value' => $t('Setting missing'),
+      'description' => $t('The non-authenticated role for Faster Register has not
+        been enabled. Please set it !here. otherwise please disable this module',
+        array('!here' => l(t('here'), 'admin/config/people/accounts'))),
+      'severity' => REQUIREMENT_ERROR,
+    );
+   }
+
+   return $requirements;
+}
