@@ -21,7 +21,18 @@ function faster_register_requirements() {
         array('!here' => l(t('here'), 'admin/config/people/accounts'))),
       'severity' => REQUIREMENT_ERROR,
     );
-   }
+  }
 
-   return $requirements;
+  if (variable_get('user_register') != USER_REGISTER_VISITORS) {
+    $requirements['faster_register_registration'] = array(
+      'title' => $t('Faster Registration account creation'),
+      'value' => $t('Setting wrong'),
+      'description' => $t('Faster Register requires that visitors to the site be
+        able to create accounts. Please change the setting !here.',
+        array('!here' => l(t('here'), 'admin/config/people/accounts'))),
+      'severity' => REQUIREMENT_ERROR,
+    );
+  }
+
+  return $requirements;
 }
