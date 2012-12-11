@@ -5,17 +5,21 @@
  * Provides streamlined registration process.
  */
 
+function faster_register_init() {
+  global $user;
+  drupal_set_message(print_r($user, true));
+}
+
 
 /**
  * Implements hook_cron().
  */
 function faster_register_cron() {
-
   // Only bother with running cron if a non-authenticated user has been set
   if ($non_authenticated_rid = variable_get('faster_register_nonauth')) {
 
     // Send reminder email to non-authenticated accounts.
-    if ($reminder_time = variable_get('faster_register_reminder_time')) {
+    if ($reminder_time = 1) { //variable_get('faster_register_reminder_time')) {
       $accounts = db_query("SELECT u.uid FROM {users} u INNER JOIN {users_roles} ur ON u.uid = ur.uid WHERE ur.rid = :rid AND u.created < :created", array(
         ':rid' => $non_authenticated_rid,
         ':created' => REQUEST_TIME - $reminder_time,
@@ -29,20 +33,35 @@ function faster_register_cron() {
       }
     }
 
+    // Purge users
     if ($purge_time = variable_get('faster_register_purge_time')) {
-      // Delete the users from the system.
-     // user_delete_multiple($uids);
+      if ($method = variable_get('faster_register_purge_method')) {
+        $accounts = db_query("SELECT u.uid FROM {users} u INNER JOIN {users_roles} ur ON u.uid = ur.uid WHERE ur.rid = :rid AND u.created < :created", array(
+          ':rid' => $non_authenticated_rid,
+          ':created' => REQUEST_TIME - $purge_time,
+        ))->fetchAll();
 
-      // Log the purged users.
-      if (!empty($purged_users)) {
-       // watchdog('logintoboggan', 'Purged the following unvalidated users: !purged_users', array('!purged_users' => theme('item_list', array('items' => $purged_users))));
+        foreach ($accounts as $account) {
+          $account = user_load($account->uid);
+          user_cancel(array(), $account, $method);
+        }
       }
     }
 
-    // Remove accounts
-    // user_cancel_reassign($edit, $uid, $method);
   }
 }
+
+
+/**
+ * Implements hook_menu_alter().
+ *
+ * @param type $items
+ */
+function faster_register_menu_alter(&$items) {
+  // Hijack the user/reset url to ensure reset link works for non-auth users
+  $items['user/reset/%/%/%']['page arguments'] = array('faster_register_authenticate', 2, 3, 4);
+}
+
 
 /**
  * Implements hook_form_FORM_ID_alter().
@@ -51,7 +70,6 @@ function faster_register_cron() {
  *       burried at the bottom of the page.
  */
 function faster_register_form_user_admin_settings_alter(&$form, &$form_state) {
-
   if (variable_get('user_register') != USER_REGISTER_VISITORS && empty($form_state['input'])) {
     drupal_set_message(t('In order for Faster Registration to function <em>Who
       can register accounts?</em> must be set to <em>Visitors</em>'), 'error');
@@ -129,6 +147,7 @@ function faster_register_form_user_admin_settings_alter(&$form, &$form_state) {
       ),
     ),
   );
+
   // The user_cancel_methods() assumes some things about the form data that is in
   // use. The minipulation here is make the returned values work with this form
   // element. See user_admin_settings() for how core implements this.
@@ -185,7 +204,6 @@ function faster_register_form_user_register_form_alter(&$form, &$form_state, $fo
   $form['account']['name']['#value'] = user_password();
   $form['account']['mail']['#title'] = t('Email');
   $form['account']['mail']['#attributes']['placeholder'] = t('Your email address');
-
   $form['account']['pass']['#access'] = FALSE;
   $form['account']['pass']['#required'] = FALSE;
   $form['account']['pass']['#value'] = user_password();
@@ -242,8 +260,8 @@ function faster_register_user_register_validate(&$form, &$form_state) {
     }
   }
 
-  // Register a flood event
-  flood_register_event('faster_register');
+  // Register a flood event to prevent abuse of the registration
+  // flood_register_event('faster_register');
 }
 
 
@@ -259,22 +277,78 @@ function faster_register_user_register_validate(&$form, &$form_state) {
  * @param type $form_state
  */
 function faster_register_user_register_submit(&$form, &$form_state) {
-  $account = $form['#user'];
-  // Get the non-authenticated role
-  $rid = user_role_load(variable_get('faster_register_nonauth'));
-  // Change the username to relate to the email address
-  $name = faster_register_create_username($account->mail);
-  $edit = array(
-    'roles' => array($rid->rid => $rid->name),
-    'name' => $name,
-  );
-
   // Save the account data into the global user
   global $user;
-  $user = user_save($account, $edit);
+
+  $account = $form['#user'];
+
+  // Get the non-authenticated role
+  $rid = user_role_load(variable_get('faster_register_nonauth'));
+  $user->roles[$rid->rid] = $rid->name;
+
+  // Add the non-authenticated role
+  db_insert('users_roles')
+    ->fields(array(
+      'uid' => $user->uid,
+      'rid' => $rid->rid))
+    ->execute();
+
+  // Remove the default authenticated role
+  unset($user->roles[DRUPAL_AUTHENTICATED_RID]);
+
+  // Change the username to relate to the email address
+  // @TODO
+  // $name = faster_register_create_username($account->mail);
 
   // Now we log the user in
   user_login_finalize();
+}
+
+
+/**
+ * Implement hook_form_FORM_ID_alter().
+ */
+function faster_register_form_user_pass_reset_alter(&$form, &$form_state) {
+  // There is nothing to do if a non-auth role is not assigned
+  if (! $rid = variable_get('faster_register_nonauth')) {
+    $form['#submit'][] = 'faster_register_user_pass_reset_submit';
+  }
+}
+
+
+/**
+ * Removes the non authenticated role when the user confirms their
+ * @param type $form
+ * @param type $form_state
+ */
+function faster_register_user_pass_reset_submit(&$form, &$form_state) {
+  global $user;
+  print_r($user);
+  print_r($form_state);
+
+  exit();
+    if ($account = user_load($uid)) {
+      if (! empty($account->roles[$rid])) {
+dpm ('Updating role!');
+/*
+        // Remove the non-authenticated role
+        db_delete('users_roles')
+          ->condition('uid', $account->uid)
+          ->condition('rid', $rid)
+          ->execute();
+*/
+        // Reload the user object freshly, since the cached value may have stale
+        // roles, and to prepare for the possible user_save() below.
+        $account = user_load($account->uid, TRUE);
+        dpm($account);
+
+
+
+        //dpm($form_state);
+            }
+
+    }
+
 }
 
 
@@ -372,4 +446,81 @@ password: Your password
   }
 
   return $text;
+}
+
+
+/**
+ * Wrapper function for user_pass_reset()
+ *
+ * This ensures that a non-authenticated user can simply click a link in their
+ * email to register completely. The drupal user_pass_reset() requires the user
+ * to be logged out. This premets that function, removes the non-authenticated
+ * role and then calls the core function.
+ *
+ * @global type $user
+ * @param type $form
+ * @param type $form_state
+ * @param type $uid
+ * @param type $timestamp
+ * @param type $hashed_pass
+ * @param type $action
+ * @return type
+ */
+function faster_register_authenticate($form, &$form_state, $uid, $timestamp, $hashed_pass, $action = NULL) {
+  global $user;
+  if ($user->uid && $user->uid == $uid) {
+    // Ensure that the user has a non-authenticated role
+    if (! empty($user->roles[variable_get('faster_register_nonauth')])) {
+        db_delete('users_roles')
+          ->condition('uid', $user->uid)
+          ->condition('rid', variable_get('faster_register_nonauth'))
+          ->execute();
+      // Log the user out so that the login link works
+     // session_destroy();
+      unset($user);
+    }
+  }
+  // Run the actual password reset
+  return user_pass_reset($form, &$form_state, $uid, $timestamp, $hashed_pass, $action);
+}
+
+
+/**
+ * Implement hook_menu_get_item_alter()
+ *
+ * Cribbed from logintoboggan.
+ * This is the best current place to dynamically remove the authenticated role
+ * from the user object on initial page load.  hook_init() is too late, as menu
+ * access checks have already been performed.
+ */
+function faster_register_menu_get_item_alter() {
+  if (! $non_authenticated_rid = variable_get('faster_register_nonauth')) {
+    return;
+  }
+  global $user;
+  faster_register_user_roles_alter($user);
+}
+
+/**
+ * Alter user roles for loaded user account.
+ *
+ * Cribbed from logintobban
+ * If user the user has the non-authenticated role unset the drupal authenticated
+ * role
+ *
+ * This alteration is required because sess_read() and user_load() automatically set the
+ * authenticated user role for all non-anonymous users (see http://drupal.org/node/92361).
+ *
+ * @param &$account
+ *    User account to have roles adjusted.
+ */
+function faster_register_user_roles_alter($account) {
+  if (! empty($account->roles[DRUPAL_AUTHENTICATED_RID])) {
+    $rid = variable_get('faster_register_nonauth');
+    if (in_array($rid, array_keys($account->roles))) {
+      unset($account->roles[DRUPAL_AUTHENTICATED_RID]);
+      // Reset the permissions cache.
+      drupal_static_reset('user_access');
+    }
+  }
 }
