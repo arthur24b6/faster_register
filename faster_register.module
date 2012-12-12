@@ -2,207 +2,25 @@
 
 /**
  * @file
- * Provides streamlined registration process.
- */
-
-function faster_register_init() {
-  global $user;
-  drupal_set_message(print_r($user, true));
-}
-
-
-/**
- * Implements hook_cron().
- */
-function faster_register_cron() {
-  // Only bother with running cron if a non-authenticated user has been set
-  if ($non_authenticated_rid = variable_get('faster_register_nonauth')) {
-
-    // Send reminder email to non-authenticated accounts.
-    if ($reminder_time = 1) { //variable_get('faster_register_reminder_time')) {
-      $accounts = db_query("SELECT u.uid FROM {users} u INNER JOIN {users_roles} ur ON u.uid = ur.uid WHERE ur.rid = :rid AND u.created < :created", array(
-        ':rid' => $non_authenticated_rid,
-        ':created' => REQUEST_TIME - $reminder_time,
-      ))->fetchAll();
-
-      foreach ($accounts as $account) {
-        $account = user_load($account->uid);
-        $params['account'] = $account;
-        $language = $language ? $language : user_preferred_language($account);
-        drupal_mail('faster_register', 'reminder', $account->mail, $language, $params);
-      }
-    }
-
-    // Purge users
-    if ($purge_time = variable_get('faster_register_purge_time')) {
-      if ($method = variable_get('faster_register_purge_method')) {
-        $accounts = db_query("SELECT u.uid FROM {users} u INNER JOIN {users_roles} ur ON u.uid = ur.uid WHERE ur.rid = :rid AND u.created < :created", array(
-          ':rid' => $non_authenticated_rid,
-          ':created' => REQUEST_TIME - $purge_time,
-        ))->fetchAll();
-
-        foreach ($accounts as $account) {
-          $account = user_load($account->uid);
-          user_cancel(array(), $account, $method);
-        }
-      }
-    }
-
-  }
-}
-
-
-/**
- * Implements hook_menu_alter().
+ * Modifies the user registration form to streamline things
  *
- * @param type $items
  */
-function faster_register_menu_alter(&$items) {
-  // Hijack the user/reset url to ensure reset link works for non-auth users
-  $items['user/reset/%/%/%']['page arguments'] = array('faster_register_authenticate', 2, 3, 4);
-}
-
-
-/**
- * Implements hook_form_FORM_ID_alter().
- *
- * @TODO it would be nice to cleanup the form here a bit so this does not get
- *       burried at the bottom of the page.
- */
-function faster_register_form_user_admin_settings_alter(&$form, &$form_state) {
-  if (variable_get('user_register') != USER_REGISTER_VISITORS && empty($form_state['input'])) {
-    drupal_set_message(t('In order for Faster Registration to function <em>Who
-      can register accounts?</em> must be set to <em>Visitors</em>'), 'error');
-  }
-
-  $form['faster_register'] = array(
-    '#type' => 'fieldset',
-    '#title' => t('Faster Register'),
-    '#description' => t('Faster Register provides a stream lined process of
-      registering users relying only on an email address. Faster registration
-      gives users a non-authenticated role when they provide their email address.
-      At this time they are sent an eamil confirmation link which can be used to
-      escalate their role.'),
-  );
-
-  // Do not allow users to set the anonymous or authenticated user roles as the
-  // non-authenticated role.
-  $roles = user_roles();
-  unset($roles[DRUPAL_ANONYMOUS_RID]);
-  unset($roles[DRUPAL_AUTHENTICATED_RID]);
-  $roles[0] = t('Disabled');
-
-  $form['faster_register']['faster_register_nonauth'] = array(
-    '#type' => 'select',
-    '#title' => t('Non-authenticated role'),
-    '#options' => $roles,
-    '#default_value' => variable_get('faster_register_nonauth', 0),
-    '#description' => t('Chose the role to use for the non-authenticated role.
-      This role generally has more permissions than the anonymouse user but fewer
-      than an authenticated role. If this is set to <em>disabled</em> no Faster
-      Registration functionality will be enabled.'),
-  );
-
-  $time = array(
-    0 => t('Never'),
-    3600 => t('One day'),
-    7200 => t('Two days'),
-    25200 => t('One week'),
-    50400 => t('Two weeks'),
-    100800 => t('One month')
-  );
-
-  $form['faster_register']['faster_register_reminder_time'] = array(
-    '#type' => 'select',
-    '#title' => t('Send non-authenticated users reminder email'),
-    '#options' => $time,
-    '#default_value' => variable_get('faster_register_reminder_time'),
-    '#description' => t('Send non-authenticated users an email reminding them to
-      fully register their account.')
-  );
-
-  $form['faster_register']['faster_register_purge_time'] = array(
-    '#type' => 'select',
-    '#title' => t('Purge non-authenticated users after'),
-    '#options' => $time,
-    '#default_value' => variable_get('faster_register_purge_time'),
-    '#description' => t('Non-authencticated users can be purged from the system
-      after a set amount of time.'),
-    '#states' => array(
-      'invisible' => array(
-        ':input[name="faster_register_nonauth"]' => array('value' => 0),
-      ),
-    ),
-  );
-
-  $form['faster_register']['faster_register_purge_method'] = array(
-    '#type' => 'item',
-    '#title' => t('Method for purging the non-authenticated user'),
-    '#description' => t('Faster Register does not use the default content handling
-      settings when the user is purged. Define the method you wish to use here.'),
-    '#states' => array(
-      // Hide the settings when the cancel notify checkbox is disabled.
-      'invisible' => array(
-        ':input[name="faster_register_purge_time"]' => array('value' => 0),
-      ),
-    ),
-  );
-
-  // The user_cancel_methods() assumes some things about the form data that is in
-  // use. The minipulation here is make the returned values work with this form
-  // element. See user_admin_settings() for how core implements this.
-  foreach (user_cancel_methods() as $id => $element) {
-    if (empty($element['#access'])) {
-      $element['#default_value'] = variable_get('faster_register_purge_method');
-      $element['#parents'] = array('faster_register_purge_method');
-      $form['faster_register']['faster_register_purge_method'][$id] = $element;
-    }
-  }
-
-  $form['faster_register_email'] = array(
-    '#type' => 'fieldset',
-    '#title' => t('Registration reminder'),
-    '#collapsible' => TRUE,
-    '#collapsed' => (variable_get('user_register', USER_REGISTER_VISITORS_ADMINISTRATIVE_APPROVAL) != USER_REGISTER_VISITORS),
-    '#description' => t('Edit the reminder e-mail message sent to non-authenticated
-      who have not confirmed their account.') . ' ' . $email_token_help,
-    '#group' => 'email',
-    '#states' => array(
-      'invisible' => array(
-        ':input[name="faster_register_reminder_time"]' => array('value' => 0),
-      ),
-    ),
-  );
-  $form['faster_register_email']['faster_register_email_reminder_subject'] = array(
-    '#type' => 'textfield',
-    '#title' => t('Subject'),
-    '#default_value' => faster_register_mail_text('faster_register_email_reminder_subject', NULL, array(), FALSE),
-    '#maxlength' => 180,
-  );
-  $form['faster_register_email']['faster_register_email_reminder_body'] = array(
-    '#type' => 'textarea',
-    '#title' => t('Body'),
-    '#default_value' => faster_register_mail_text('faster_register_email_reminder_body', NULL, array(), FALSE),
-    '#rows' => 15,
-  );
-
-}
 
 
 /**
  * Implements hook_form_FORM_ID_alter().
  */
 function faster_register_form_user_register_form_alter(&$form, &$form_state, $form_id) {
-  // If the non-authenticated role is not set do not touch the form.
-  if (! variable_get('faster_register_nonauth')) {
-    return;
-  }
-
   // Hide the name value
   $form['account']['name']['#type'] = 'value';
-  // Generate a random password as a placeholder for the user name
+  // Generate password as a placeholder for the user name until validation
   $form['account']['name']['#value'] = user_password();
   $form['account']['mail']['#title'] = t('Email');
+  $form['account']['mail']['#description'] = t('Use your email address to register
+    with us. For now, we will create your user name from your email address. If your
+    email address is <em>obama@whitehouse.gov</em> your user name will be <em>obama</em>
+    We will send you a confirmation email and then you will be able to
+    change your user name as well as your password.');
   $form['account']['mail']['#attributes']['placeholder'] = t('Your email address');
   $form['account']['pass']['#access'] = FALSE;
   $form['account']['pass']['#required'] = FALSE;
@@ -210,8 +28,6 @@ function faster_register_form_user_register_form_alter(&$form, &$form_state, $fo
 
   // Add this validate handler to the top of the validation chain.
   array_unshift($form['#validate'], 'faster_register_user_register_validate');
-  // Add the submit handler which will be called after the user creation
-  $form['#submit'][] = 'faster_register_user_register_submit';
 }
 
 
@@ -231,6 +47,9 @@ function faster_register_form_user_register_form_alter(&$form, &$form_state, $fo
  * @param type $form_state
  */
 function faster_register_user_register_validate(&$form, &$form_state) {
+  // Register a flood event to prevent abuse of the registration
+  flood_register_event('faster_register');
+
   if (! flood_is_allowed('faster_register', 3)) {
     form_set_error('mail', t('Sorry, you have made three attempts to register your
       account. Maybe you\'ve !forgotten?', array(
@@ -260,95 +79,8 @@ function faster_register_user_register_validate(&$form, &$form_state) {
     }
   }
 
-  // Register a flood event to prevent abuse of the registration
-  // flood_register_event('faster_register');
-}
-
-
-/**
- * Submit handler for user_register.
- *
- * This is called after the user is created and will only be called when the
- * user_register_form. This is not a great way to approach this but because
- * user_save() changes the roles submitted with the user we have to catch the
- * create user and alter the DB tables and then log the user back in.
- *
- * @param type $form
- * @param type $form_state
- */
-function faster_register_user_register_submit(&$form, &$form_state) {
-  // Save the account data into the global user
-  global $user;
-
-  $account = $form['#user'];
-
-  // Get the non-authenticated role
-  $rid = user_role_load(variable_get('faster_register_nonauth'));
-  $user->roles[$rid->rid] = $rid->name;
-
-  // Add the non-authenticated role
-  db_insert('users_roles')
-    ->fields(array(
-      'uid' => $user->uid,
-      'rid' => $rid->rid))
-    ->execute();
-
-  // Remove the default authenticated role
-  unset($user->roles[DRUPAL_AUTHENTICATED_RID]);
-
-  // Change the username to relate to the email address
-  // @TODO
-  // $name = faster_register_create_username($account->mail);
-
-  // Now we log the user in
-  user_login_finalize();
-}
-
-
-/**
- * Implement hook_form_FORM_ID_alter().
- */
-function faster_register_form_user_pass_reset_alter(&$form, &$form_state) {
-  // There is nothing to do if a non-auth role is not assigned
-  if (! $rid = variable_get('faster_register_nonauth')) {
-    $form['#submit'][] = 'faster_register_user_pass_reset_submit';
-  }
-}
-
-
-/**
- * Removes the non authenticated role when the user confirms their
- * @param type $form
- * @param type $form_state
- */
-function faster_register_user_pass_reset_submit(&$form, &$form_state) {
-  global $user;
-  print_r($user);
-  print_r($form_state);
-
-  exit();
-    if ($account = user_load($uid)) {
-      if (! empty($account->roles[$rid])) {
-dpm ('Updating role!');
-/*
-        // Remove the non-authenticated role
-        db_delete('users_roles')
-          ->condition('uid', $account->uid)
-          ->condition('rid', $rid)
-          ->execute();
-*/
-        // Reload the user object freshly, since the cached value may have stale
-        // roles, and to prepare for the possible user_save() below.
-        $account = user_load($account->uid, TRUE);
-        dpm($account);
-
-
-
-        //dpm($form_state);
-            }
-
-    }
-
+  // Create a username based on the email address
+  $form_state['values']['name'] = faster_register_create_username($form_state['values']['mail']);
 }
 
 
@@ -380,147 +112,4 @@ function faster_register_create_username($email) {
     $i++;
   }
   return $name;
-}
-
-
-/**
- * Implements hook_mail().
- */
-function faster_register_mail($key, &$message, $params) {
-  $language = $message['language'];
-  $variables = array('user' => $params['account']);
-  $message['subject'] .= faster_register_mail_text('faster_register_email_reminder_subject', $language, $variables);
-  $message['body'][] = faster_register_mail_text('faster_register_email_reminder_body', $language, $variables);
-}
-
-
-/**
- * Returns a mail string for a variable name.
- *
- * Used by faster_register_mail() and the settings forms to retrieve strings.
- */
-function faster_register_mail_text($key, $language = NULL, $variables = array(), $replace = TRUE) {
-  $langcode = isset($language) ? $language->language : NULL;
-
-  if ($admin_setting = variable_get('faster_register_mail_' . $key, FALSE)) {
-    // An admin setting overrides the default string.
-    $text = $admin_setting;
-  }
-  else {
-    // No override, return default string.
-    switch ($key) {
-      case 'faster_register_email_reminder_subject':
-        $text = t('You have created an account at [site:name]!', array(), array('langcode' => $langcode));
-        break;
-      case 'faster_register_email_reminder_body':
-        $text = t("[user:name],
-
-You have create an account at [site:name] and it is active!.
-
-You may now log in by clicking this link or copying and pasting it into your browser:
-
-[user:one-time-login-url]
-
-This link can only be used once to log in and will lead you to a page where you can set your password.
-
-After setting your password, you will be able to log in at [site:login-url] in the future using:
-
-username: [user:name]
-password: Your password
-
---  [site:name] team", array(), array('langcode' => $langcode));
-        break;
-
-    }
-  }
-
-  if ($replace) {
-    // We do not sanitize the token replacement, since the output of this
-    // replacement is intended for an e-mail message, not a web browser.
-    return token_replace($text, $variables, array(
-      'language' => $language,
-      'callback' => 'user_mail_tokens',
-      'sanitize' => FALSE,
-      'clear' => TRUE)
-    );
-  }
-
-  return $text;
-}
-
-
-/**
- * Wrapper function for user_pass_reset()
- *
- * This ensures that a non-authenticated user can simply click a link in their
- * email to register completely. The drupal user_pass_reset() requires the user
- * to be logged out. This premets that function, removes the non-authenticated
- * role and then calls the core function.
- *
- * @global type $user
- * @param type $form
- * @param type $form_state
- * @param type $uid
- * @param type $timestamp
- * @param type $hashed_pass
- * @param type $action
- * @return type
- */
-function faster_register_authenticate($form, &$form_state, $uid, $timestamp, $hashed_pass, $action = NULL) {
-  global $user;
-  if ($user->uid && $user->uid == $uid) {
-    // Ensure that the user has a non-authenticated role
-    if (! empty($user->roles[variable_get('faster_register_nonauth')])) {
-        db_delete('users_roles')
-          ->condition('uid', $user->uid)
-          ->condition('rid', variable_get('faster_register_nonauth'))
-          ->execute();
-      // Log the user out so that the login link works
-     // session_destroy();
-      unset($user);
-    }
-  }
-  // Run the actual password reset
-  return user_pass_reset($form, &$form_state, $uid, $timestamp, $hashed_pass, $action);
-}
-
-
-/**
- * Implement hook_menu_get_item_alter()
- *
- * Cribbed from logintoboggan.
- * This is the best current place to dynamically remove the authenticated role
- * from the user object on initial page load.  hook_init() is too late, as menu
- * access checks have already been performed.
- */
-function faster_register_menu_get_item_alter() {
-  if (! $non_authenticated_rid = variable_get('faster_register_nonauth')) {
-    return;
-  }
-  global $user;
-  faster_register_user_roles_alter($user);
-}
-
-/**
- * Alter user roles for loaded user account.
- *
- * Cribbed from logintobban
- * If user the user has the non-authenticated role unset the drupal authenticated
- * role
- *
- * This alteration is required because sess_read() and user_load() automatically set the
- * authenticated user role for all non-anonymous users (see http://drupal.org/node/92361).
- *
- * @param &$account
- *    User account to have roles adjusted.
- */
-function faster_register_user_roles_alter($account) {
-  if (! empty($account->roles[DRUPAL_AUTHENTICATED_RID])) {
-    $rid = variable_get('faster_register_nonauth');
-    if (in_array($rid, array_keys($account->roles))) {
-      unset($account->roles[DRUPAL_AUTHENTICATED_RID]);
-      // Reset the permissions cache.
-      drupal_static_reset('user_access');
-    }
-  }
 }
